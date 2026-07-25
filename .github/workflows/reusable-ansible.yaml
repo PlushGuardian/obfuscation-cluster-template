@@ -1,0 +1,107 @@
+name: Deploy Ansible
+
+# Trigger manually from the Actions tab ("Run workflow").
+on:
+  workflow_dispatch:
+    inputs:
+      playbook:
+        description: 'Playbook to run (from ./playbooks)'
+        required: true
+        type: choice
+        default: site.yml
+        options:
+          - site.yml
+          # Add more playbook filenames here as you create them, e.g.:
+          # - webservers.yml
+          # - database.yml
+      target:
+        description: 'Host or group to deploy to (from inventory)'
+        required: true
+        type: choice
+        options:
+          # BEGIN AUTO-GENERATED TARGETS - managed by sync-inventory-dropdown.yml, do not edit by hand
+          - all
+          # END AUTO-GENERATED TARGETS
+      dry_run:
+        description: 'Dry run (ansible --check --diff, no changes applied)'
+        required: true
+        type: boolean
+        default: true
+      extra_vars:
+        description: 'Optional extra vars, e.g. "app_version=1.2.3 foo=bar"'
+        required: false
+        type: string
+        default: ''
+
+permissions:
+  contents: read
+
+# Prevent two deploys to the same target from racing each other.
+concurrency:
+  group: ansible-deploy-${{ github.event.inputs.target }}
+  cancel-in-progress: false
+
+jobs:
+  deploy:
+    name: >-
+      ${{ github.event.inputs.dry_run == 'true' && 'Dry run' || 'Deploy' }}:
+      ${{ github.event.inputs.playbook }} -> ${{ github.event.inputs.target }}
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+          cache: 'pip'
+          cache-dependency-path: requirements.txt
+
+      - name: Install Ansible
+        run: pip install -r requirements.txt
+
+      - name: Set up SSH access
+        run: |
+          mkdir -p ~/.ssh
+          echo "${{ secrets.SSH_PRIVATE_KEY }}" > ~/.ssh/deploy_key
+          chmod 600 ~/.ssh/deploy_key
+          cat >> ~/.ssh/config << EOF
+          Host *
+            IdentityFile ~/.ssh/deploy_key
+            StrictHostKeyChecking accept-new
+            UserKnownHostsFile ~/.ssh/known_hosts
+          EOF
+          chmod 600 ~/.ssh/config
+
+      - name: Write Ansible Vault password (optional)
+        if: ${{ secrets.ANSIBLE_VAULT_PASSWORD != '' }}
+        run: |
+          echo "${{ secrets.ANSIBLE_VAULT_PASSWORD }}" > .vault_pass
+          chmod 600 .vault_pass
+
+      - name: Run playbook
+        env:
+          ANSIBLE_STDOUT_CALLBACK: yaml
+          ANSIBLE_FORCE_COLOR: '1'
+        run: |
+          CMD=(ansible-playbook -i inventory/hosts.yml "playbooks/${{ github.event.inputs.playbook }}" --limit "${{ github.event.inputs.target }}")
+
+          if [ "${{ github.event.inputs.dry_run }}" = "true" ]; then
+            CMD+=(--check --diff)
+          fi
+
+          if [ -n "${{ github.event.inputs.extra_vars }}" ]; then
+            CMD+=(--extra-vars "${{ github.event.inputs.extra_vars }}")
+          fi
+
+          if [ -f .vault_pass ]; then
+            CMD+=(--vault-password-file .vault_pass)
+          fi
+
+          echo "Running: ${CMD[*]}"
+          "${CMD[@]}"
+
+      - name: Clean up secrets
+        if: always()
+        run: rm -f ~/.ssh/deploy_key .vault_pass
