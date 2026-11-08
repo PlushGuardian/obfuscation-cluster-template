@@ -1,0 +1,5 @@
+roles:
+  - name: obfuscation_server
+    src: https://github.com/PlushGuardian/obfuscation-server-ansible-role.git
+    scm: git
+    version: migrate-roles

@@ -1,0 +1,45 @@
+name: Sync Deploy Target Dropdown
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'inventory/hosts.yml'
+  workflow_dispatch: {}
+
+permissions:
+  contents: write
+
+jobs:
+  sync:
+    runs-on: ubuntu-latest
+    steps:
+      # Uses a PAT, not the default GITHUB_TOKEN: GitHub blocks the default
+      # token from pushing changes to files under .github/workflows/.
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          token: ${{ secrets.WORKFLOWS_PAT }}
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Install dependencies
+        run: pip install pyyaml
+
+      - name: Regenerate dropdown from inventory
+        run: python scripts/generate_inventory_choices.py
+
+      - name: Commit changes if the dropdown changed
+        run: |
+          if git diff --quiet -- .github/workflows/deploy.yml; then
+            echo "No changes to the dropdown - nothing to commit."
+            exit 0
+          fi
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add .github/workflows/deploy.yml
+          git commit -m "chore: sync deploy target dropdown from inventory [skip ci]"
+          git push
